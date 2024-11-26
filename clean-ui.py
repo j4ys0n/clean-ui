@@ -48,7 +48,14 @@ def describe_image(image, user_prompt, temperature, top_k, top_p, max_tokens, hi
 
     # Prepare prompt with user input based on selected model
     if model_choice == "1":  # Llama Model
-        prompt = f"<|image|><|begin_of_text|>{user_prompt} Answer:"
+        # prompt = f"<|image|><|begin_of_text|>{user_prompt} Answer:"
+        messages = [
+            {"role": "user", "content": [
+                {"type": "image"},
+                {"type": "text", "text": user_prompt}
+            ]}
+        ]
+        prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
         # Preprocess the image and prompt
         inputs = processor(image, prompt, return_tensors="pt").to(model.device)
 
@@ -65,7 +72,7 @@ def describe_image(image, user_prompt, temperature, top_k, top_p, max_tokens, hi
         raw_output = processor.decode(output[0])
         
         # Clean up the output to remove system tokens
-        cleaned_output = raw_output.replace("<|image|><|begin_of_text|>", "").strip().replace(" Answer:", "")
+        cleaned_output = raw_output.replace(prompt,"").replace("<|begin_of_text|>","").replace("<|eot_id|>","")
 
     elif model_choice == "2":  # Molmo Model
         # Prepare inputs for Molmo model
