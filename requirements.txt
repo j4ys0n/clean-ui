@@ -1,6 +1,6 @@
 torch==2.1.2
 gradio==4.44.0
-transformers==4.36.2
+transformers==4.45.1
 Pillow==10.2.0
 accelerate==0.25.0
 bitsandbytes==0.41.3
