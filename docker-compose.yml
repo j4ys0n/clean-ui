@@ -1,6 +1,6 @@
 services:
   clean-ui:
-    image: ghcr.io/j4ys0n/clean-ui:sha-9a8ee57
+    image: ghcr.io/j4ys0n/clean-ui:sha-6cd75bf
     container_name: clean-ui
     environment:
       - MODEL_NAME=unsloth/Llama-3.2-11B-Vision-Instruct
