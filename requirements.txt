@@ -3,6 +3,7 @@ gradio==4.44.0
 torch==2.1.2
 transformers==4.45.1
 Pillow==10.2.0
+numpy==1.24.3
 
 # Model specific dependencies
 accelerate>=0.26.0  # Required for model loading and optimization

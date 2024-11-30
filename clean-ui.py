@@ -1,15 +1,16 @@
 import gradio as gr
 import torch
 import os
+import numpy as np
 from PIL import Image
-from transformers import AutoModelForCausalLM, AutoProcessor, GenerationConfig
+from transformers import MllamaForConditionalGeneration, AutoProcessor, GenerationConfig
 
 # Environment variable configurations with defaults
 PYTORCH_CUDA_ALLOC = os.environ.get('PYTORCH_CUDA_ALLOC_CONF', 'max_split_size_mb:128')
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = PYTORCH_CUDA_ALLOC
 
 # Model configuration
-DEFAULT_MODEL = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit"
+DEFAULT_MODEL = "unsloth/Llama-3.2-11B-Vision-Instruct"
 model_name = os.environ.get('MODEL_NAME', DEFAULT_MODEL)
 
 # Generation parameters
@@ -38,79 +39,90 @@ print(f"Server config: {SERVER_NAME}:{SERVER_PORT}")
 print(f"Model parameters: temp={TEMPERATURE}, top_k={TOP_K}, top_p={TOP_P}, max_tokens={MAX_OUTPUT_TOKENS}")
 print(f"Image size: {MAX_IMAGE_SIZE}")
 
-# Load model and processor
-model = AutoModelForCausalLM.from_pretrained(
+# Model configuration
+model = MllamaForConditionalGeneration.from_pretrained(
     model_name,
     torch_dtype=torch.bfloat16,
-    device_map="auto",
-    trust_remote_code=True
+    device_map="auto"
 )
+
 processor = AutoProcessor.from_pretrained(model_name)
+# Tie weights and set to eval mode
+model.tie_weights()
+model.eval()
+print("Model device:", next(model.parameters()).device)
+print("Available device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
 
 # Visual theme
 visual_theme = gr.themes.Default()
 
 # Function to process the image and generate a description
 def describe_image(image, user_prompt, temperature, top_k, top_p, max_tokens, history):
-    # Resize image if necessary
-    image = image.resize(MAX_IMAGE_SIZE)
-
     try:
-        # Prepare messages format
+        # Ensure image is RGB
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        print(f"Image size: {image.size}")
+        print(f"Image mode: {image.mode}")
+        print(f"Current GPU Memory Usage: {torch.cuda.memory_allocated()/1024**2:.2f}MB")
+        
+        # Format messages exactly as in the example
         messages = [
             {"role": "user", "content": [
                 {"type": "image"},
                 {"type": "text", "text": user_prompt}
             ]}
         ]
+        
+        # Process text using chat template
+        input_text = processor.apply_chat_template(messages, add_generation_prompt=True)
+        
+        # Process inputs
+        inputs = processor(
+            image,
+            input_text,
+            add_special_tokens=False,
+            return_tensors="pt"
+        ).to(model.device)
 
-        # Try chat template first (for models like Llama)
-        try:
-            prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-            inputs = processor(image, prompt, return_tensors="pt").to(model.device)
-        except (AttributeError, NotImplementedError):
-            # Fallback for models that don't support chat template
-            inputs = processor.process(images=[image], text=user_prompt)
-            inputs = {k: v.to(model.device).unsqueeze(0) for k, v in inputs.items()}
+        # Print debug information
+        print("Input shapes:")
+        for k, v in inputs.items():
+            if isinstance(v, torch.Tensor):
+                print(f"{k}: {v.shape}")
 
-        # Generate output
-        if hasattr(model, 'generate_from_batch'):
-            # For models with custom generation method
-            output = model.generate_from_batch(
-                inputs,
-                GenerationConfig(
-                    max_new_tokens=min(max_tokens, MAX_OUTPUT_TOKENS),
-                    temperature=temperature,
-                    top_k=top_k,
-                    top_p=top_p,
-                    stop_strings=["<|endoftext|>", "</s>"],
-                    do_sample=True
-                ),
-                tokenizer=processor.tokenizer,
-            )
-            generated_tokens = output[0, inputs["input_ids"].size(1):]
-            cleaned_output = processor.tokenizer.decode(generated_tokens, skip_special_tokens=True)
-        else:
-            # Standard generation
-            output = model.generate(
-                **inputs,
-                max_new_tokens=min(max_tokens, MAX_OUTPUT_TOKENS),
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p
-            )
-            raw_output = processor.decode(output[0], skip_special_tokens=True)
-            cleaned_output = raw_output.replace(prompt, "").strip()
+        print("Starting generation...")
+        print(f"GPU Memory before generation: {torch.cuda.memory_allocated()/1024**2:.2f}MB")
 
-        # Clean up the output
-        if cleaned_output.startswith(user_prompt):
-            cleaned_output = cleaned_output[len(user_prompt):].strip()
+        # Generate
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=min(256, max_tokens),
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            do_sample=True
+        )
+            
+        print(f"GPU Memory after generation: {torch.cuda.memory_allocated()/1024**2:.2f}MB")
+        print("Generation complete!")
+        
+        # Decode the output
+        generated_text = processor.decode(outputs[0], skip_special_tokens=True)
 
-        history.append((user_prompt, cleaned_output))
+        # Clean up the output if needed
+        if generated_text.startswith(input_text):
+            generated_text = generated_text[len(input_text):].strip()
+
+        history.append((user_prompt, generated_text))
         return history
 
     except Exception as e:
         error_message = f"Error processing image: {str(e)}"
+        print(f"Detailed error: {e}")
+        import traceback
+        traceback.print_exc()
         history.append((user_prompt, error_message))
         return history
 
@@ -137,7 +149,7 @@ def gradio_interface():
                     height=MAX_IMAGE_HEIGHT,
                     width=MAX_IMAGE_WIDTH
                 )
-
+                
                 temperature = gr.Slider(
                     label="Temperature", minimum=0.1, maximum=2.0, value=TEMPERATURE, step=0.1, interactive=True)
                 top_k = gr.Slider(
